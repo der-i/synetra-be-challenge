@@ -1,4 +1,5 @@
 .env
+.coverage
 data/sqlite/
 data/images/
 .vscode/

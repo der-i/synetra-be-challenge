@@ -37,5 +37,9 @@ restyle: ## Reformat code with ruff.
 	poetry run ruff check --fix .
 
 .PHONY: tests
-tests: ## Run tests.
-	PYTHONPATH=. poetry run pytest -s
+tests: ## Run unit + integration tests (fast, no Docker needed).
+	PYTHONPATH= poetry run pytest -s
+
+.PHONY: tests-e2e
+tests-e2e: ## Run e2e tests against a real docker-compose stack (slow, needs Docker).
+	PYTHONPATH= poetry run pytest -s -m e2e tests/e2e
