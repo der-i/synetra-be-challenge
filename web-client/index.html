@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>synetra — camera line monitor</title>
+<style>
+  :root {
+    --bg: #14171a;
+    --panel: #1b1f23;
+    --border: #2a2e33;
+    --text: #d8dde3;
+    --muted: #7a828c;
+    --accent: #4c8bf5;
+    --ok: #3ecf8e;
+    --warn: #e8a13b;
+    font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  header {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0;
+    color: var(--text);
+  }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  .status { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); }
+  .dot.off { background: #e05252; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
+    gap: 0;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  @media (max-width: 800px) {
+    main { grid-template-columns: 1fr; }
+  }
+  section { padding: 20px 24px; }
+  .feed { border-right: 1px solid var(--border); }
+  @media (max-width: 800px) {
+    .feed { border-right: none; border-bottom: 1px solid var(--border); }
+  }
+  section h2 {
+    font-size: 12px;
+    text-transform: none;
+    color: var(--muted);
+    margin: 0 0 14px;
+    font-weight: 500;
+  }
+  .log {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .log-line {
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 8px 10px;
+    background: var(--panel);
+    border-left: 2px solid var(--accent);
+    border-radius: 2px;
+  }
+  .log-line time { color: var(--muted); margin-right: 8px; }
+  .log-empty { color: var(--muted); font-size: 13px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .card img {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+    display: block;
+    background: #0e1012;
+  }
+  .card .meta {
+    padding: 8px 10px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .card .meta strong { color: var(--text); font-weight: 500; }
+  .card a.dl {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 12px;
+  }
+  .card a.dl:hover { text-decoration: underline; }
+  .card.is-new { border-color: var(--warn); }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>camera line monitor <span>&mdash; synetra-be-challenge</span></h1>
+  <div class="status"><span class="dot" id="wsDot"></span><span id="wsLabel">connecting…</span></div>
+</header>
+
+<main>
+  <section class="feed">
+    <h2>live feed (ws)</h2>
+    <div class="log" id="log">
+      <div class="log-empty">Ожидание событий…</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>captured objects (api)</h2>
+    <div class="grid" id="grid"></div>
+  </section>
+</main>
+
+<script>
+  const API_BASE = "http://localhost:8000";
+  const WS_URL = "ws://localhost:1234";
+
+  const logEl = document.getElementById("log");
+  const gridEl = document.getElementById("grid");
+  const wsDot = document.getElementById("wsDot");
+  const wsLabel = document.getElementById("wsLabel");
+
+  const seenIds = new Set();
+
+  function timeStr() {
+    return new Date().toLocaleTimeString("ru-RU", { hour12: false });
+  }
+
+  function renderCard(record, isNew) {
+    const card = document.createElement("div");
+    card.className = "card" + (isNew ? " is-new" : "");
+    card.innerHTML = `
+      <img src="${record.image_url}" alt="object ${record.id}" loading="lazy">
+      <div class="meta">
+        <strong>#${record.id}</strong>
+        <span>${record.width}&times;${record.height}px</span>
+        <a class="dl" href="${record.image_url}" download>Скачать</a>
+      </div>
+    `;
+    return card;
+  }
+
+  function addRecord(record, isNew) {
+    if (seenIds.has(record.id)) return;
+    seenIds.add(record.id);
+    gridEl.prepend(renderCard(record, isNew));
+  }
+
+  function addLogLine(record) {
+    if (logEl.querySelector(".log-empty")) logEl.innerHTML = "";
+    const line = document.createElement("div");
+    line.className = "log-line";
+    line.innerHTML = `<time>${timeStr()}</time>captured #${record.id} &mdash; ${record.width}&times;${record.height}`;
+    logEl.prepend(line);
+  }
+
+  function setWsStatus(connected) {
+    wsDot.className = "dot " + (connected ? "on" : "off");
+    wsLabel.textContent = connected ? "connected" : "disconnected, retrying…";
+  }
+
+  async function loadInitial() {
+    try {
+      const res = await fetch(`${API_BASE}/objects`);
+      const records = await res.json();
+      records.forEach((r) => addRecord(r, false));
+    } catch (e) {
+      console.error("Failed to load /objects", e);
+    }
+  }
+
+  function connectWs() {
+    const ws = new WebSocket(WS_URL);
+    ws.onopen = () => setWsStatus(true);
+    ws.onclose = () => {
+      setWsStatus(false);
+      setTimeout(connectWs, 3000);
+    };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (event) => {
+      try {
+        const record = JSON.parse(event.data);
+        addRecord(record, true);
+        addLogLine(record);
+      } catch (e) {
+        console.error("Bad WS message", event.data);
+      }
+    };
+  }
+
+  loadInitial();
+  connectWs();
+</script>
+
+</body>
+</html>

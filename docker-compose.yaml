@@ -1,0 +1,112 @@
+services:
+
+  checker:
+    build:
+      context: .
+      dockerfile: ./services/checker/Dockerfile
+    container_name: checker
+    ports:
+      - "${TCP_PORT}:${TCP_PORT}"
+    networks:
+      - my_network
+
+  api:
+    build:
+      context: .
+      dockerfile: ./services/api/Dockerfile
+    container_name: api
+    ports:
+      - "${API_PORT}:${API_PORT}"
+    volumes:
+      - ./data/sqlite:/data/sqlite
+    networks:
+      - my_network
+
+  camera:
+    build:
+      context: .
+      dockerfile: ./services/camera/Dockerfile
+    container_name: camera
+    depends_on:
+      - checker
+      - api
+      - rabbitmq
+      - mc-public
+    ports:
+      - "${WS_PORT}:${WS_PORT}"
+    volumes:
+      - ./data/images:/data/images:ro
+    networks:
+      - my_network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rmq_data:/var/lib/rabbitmq
+    command: bash -c "
+        rabbitmq-server &
+        sleep 10 &&
+        rabbitmqadmin -u ${RABBITMQ_DEFAULT_USER} -p ${RABBITMQ_DEFAULT_PASS} -H rabbitmq declare exchange name=inference.in type=direct &&
+        rabbitmqadmin -u ${RABBITMQ_DEFAULT_USER} -p ${RABBITMQ_DEFAULT_PASS} -H rabbitmq declare queue name=inference.in durable=true &&
+        rabbitmqadmin -u ${RABBITMQ_DEFAULT_USER} -p ${RABBITMQ_DEFAULT_PASS} -H rabbitmq declare binding source=inference.in destination=inference.in routing_key=inference.in &&
+        wait"
+    networks:
+      - my_network
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - min_data:/data
+    command: server /data --console-address ":9001"
+    restart: always
+    networks:
+      - my_network
+
+  mc-mb:
+    image: cgr.dev/chainguard/minio-client:latest
+    container_name: minio_mc_mb
+    depends_on:
+      - minio
+    environment:
+      MC_HOST_myminio: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+    entrypoint: ["mc"]
+    command: ["mb", "--ignore-existing", "myminio/${MINIO_BUCKET}"]
+    restart: on-failure
+    networks:
+      - my_network
+
+  mc-public:
+    image: cgr.dev/chainguard/minio-client:latest
+    container_name: minio_mc_public
+    depends_on:
+      mc-mb:
+        condition: service_completed_successfully
+    environment:
+      MC_HOST_myminio: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+    entrypoint: ["mc"]
+    command: ["anonymous", "set", "public", "myminio/${MINIO_BUCKET}"]
+    restart: on-failure
+    networks:
+      - my_network
+
+volumes:
+  min_data:
+  rmq_data:
+
+networks:
+  my_network:
+    driver: bridge
